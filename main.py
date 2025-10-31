@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader  # 🟢 changed here
+from langchain_community.document_loaders import UnstructuredWordDocumentLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma  # ✅ Updated import
 from langchain_core.prompts import PromptTemplate
 from fastapi.middleware.cors import CORSMiddleware
 import os, re, json
@@ -16,14 +16,14 @@ if not openai_api_key:
     raise ValueError("Missing OPENAI_API_KEY in .env")
 
 # ========== WORD CONFIG ==========
-DOC_PATH = "Proposal/Proposal Knowledge Base.docx"  # 🟢 change your file name here
+DOC_PATH = "Proposal/Proposal Knowledge Base.docx"
 
 # ========== FASTAPI APP ==========
 app = FastAPI(title="Proposal Generator API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow frontend
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -93,22 +93,45 @@ proposal_prompt = PromptTemplate(
     input_variables=["context", "requirements"]
 )
 
-# ========== LOAD KNOWLEDGE BASE ==========
+# ========== GLOBAL VARIABLES ==========
+vectorstore = None
+llm = None
 
-print("📄 Loading knowledge base from", DOC_PATH)
-loader = UnstructuredWordDocumentLoader(DOC_PATH)  # 🟢 changed from PyPDFLoader
-docs = loader.load()
-
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-chunks = splitter.split_documents(docs)
-print(f"✅ Loaded {len(chunks)} chunks.")
-
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-vectorstore = Chroma.from_documents(chunks, embeddings, persist_directory="./chroma_store")
-vectorstore.persist()
-print("✅ Chroma vectorstore initialized.")
-
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
+# ========== STARTUP EVENT ==========
+@app.on_event("startup")
+async def startup_event():
+    """Initialize vectorstore and LLM on startup"""
+    global vectorstore, llm
+    
+    print("📄 Loading knowledge base from", DOC_PATH)
+    
+    # Check if file exists
+    if not os.path.exists(DOC_PATH):
+        print(f"❌ Warning: {DOC_PATH} not found. Vectorstore will be empty.")
+        # Create empty vectorstore for testing
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
+        vectorstore = Chroma(
+            embedding_function=embeddings,
+            persist_directory="./chroma_store"
+        )
+    else:
+        loader = UnstructuredWordDocumentLoader(DOC_PATH)
+        docs = loader.load()
+        
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.split_documents(docs)
+        print(f"✅ Loaded {len(chunks)} chunks.")
+        
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
+        vectorstore = Chroma.from_documents(
+            chunks, 
+            embeddings, 
+            persist_directory="./chroma_store"
+        )
+        print("✅ Chroma vectorstore initialized.")
+    
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
+    print("✅ LLM initialized.")
 
 # ========== HELPER FUNCTIONS ==========
 
@@ -149,10 +172,17 @@ def format_requirements(intent: dict, question: str) -> str:
 def root():
     return {"status": "online", "message": "Proposal Generator API is running."}
 
+@app.get("/health")
+def health():
+    """Health check endpoint for Render"""
+    return {"status": "healthy"}
 
 @app.post("/ask")
 def ask(query: Query):
     try:
+        if vectorstore is None or llm is None:
+            raise HTTPException(status_code=503, detail="Service not initialized yet. Please try again.")
+        
         print(f"🟢 Received query: {query.question}")
 
         intent = extract_intent(query.question)
@@ -185,8 +215,9 @@ def ask(query: Query):
         print("❌ Error in /ask:", str(e))
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
+# ========== MAIN ==========
 if __name__ == "__main__":
-    import uvicorn, os
-    port = int(os.environ.get("PORT", 8000))  # ✅ use Render’s assigned port
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
-
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    # ✅ Critical: bind to 0.0.0.0 and start immediately
+    uvicorn.run(app, host="0.0.0.0", port=port)

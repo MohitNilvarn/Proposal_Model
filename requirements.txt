@@ -17,3 +17,4 @@ unstructured[pdf]
 supabase
 faiss-cpu
 tiktoken
+langchain-chroma
