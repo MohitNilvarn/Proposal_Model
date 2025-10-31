@@ -1,20 +1,13 @@
 fastapi
-uvicorn
-python-dotenv
+uvicorn[standard]
+pydantic
 langchain
-langchain-core
 langchain-openai
+langchain-chroma
 langchain-community
 langchain-text-splitters
-openai
 chromadb
-pypdf
-python-docx
-pdfminer.six
-unstructured
-unstructured[docx]
-unstructured[pdf]
-supabase
-faiss-cpu
-tiktoken
-langchain-chroma
+python-dotenv
+python-multipart
+docx2txt
+# ✅ Required for Docx2txtLoader

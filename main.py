@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+from langchain_community.document_loaders import Docx2txtLoader  # Lightweight Word loader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_chroma import Chroma  # ✅ Updated import
+from langchain_chroma import Chroma
 from langchain_core.prompts import PromptTemplate
 from fastapi.middleware.cors import CORSMiddleware
 import os, re, json
 from dotenv import load_dotenv
+import asyncio
 
 # ========== LOAD ENV ==========
 load_dotenv()
@@ -96,42 +97,73 @@ proposal_prompt = PromptTemplate(
 # ========== GLOBAL VARIABLES ==========
 vectorstore = None
 llm = None
+is_initialized = False
+initialization_error = None
 
-# ========== STARTUP EVENT ==========
+# ========== BACKGROUND INITIALIZATION ==========
+def initialize_services():
+    """Initialize vectorstore and LLM in background"""
+    global vectorstore, llm, is_initialized, initialization_error
+    
+    try:
+        print("📄 Starting initialization...")
+        
+        # Initialize LLM first (lightweight)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
+        print("✅ LLM initialized.")
+        
+        # Initialize embeddings
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
+        
+        # Check if vectorstore already exists
+        if os.path.exists("./chroma_store"):
+            print("📦 Loading existing vectorstore...")
+            vectorstore = Chroma(
+                embedding_function=embeddings,
+                persist_directory="./chroma_store"
+            )
+            print("✅ Vectorstore loaded from disk.")
+        elif os.path.exists(DOC_PATH):
+            print(f"📄 Loading knowledge base from {DOC_PATH}")
+            loader = Docx2txtLoader(DOC_PATH)
+            docs = loader.load()
+            
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            chunks = splitter.split_documents(docs)
+            print(f"✅ Loaded {len(chunks)} chunks.")
+            
+            vectorstore = Chroma.from_documents(
+                chunks, 
+                embeddings, 
+                persist_directory="./chroma_store"
+            )
+            print("✅ Chroma vectorstore created and persisted.")
+        else:
+            print(f"⚠️ Warning: {DOC_PATH} not found. Creating empty vectorstore.")
+            vectorstore = Chroma(
+                embedding_function=embeddings,
+                persist_directory="./chroma_store"
+            )
+        
+        is_initialized = True
+        print("✅ All services initialized successfully!")
+        
+    except Exception as e:
+        initialization_error = str(e)
+        print(f"❌ Initialization error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ========== STARTUP EVENT (LIGHTWEIGHT) ==========
 @app.on_event("startup")
 async def startup_event():
-    """Initialize vectorstore and LLM on startup"""
-    global vectorstore, llm
-    
-    print("📄 Loading knowledge base from", DOC_PATH)
-    
-    # Check if file exists
-    if not os.path.exists(DOC_PATH):
-        print(f"❌ Warning: {DOC_PATH} not found. Vectorstore will be empty.")
-        # Create empty vectorstore for testing
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-        vectorstore = Chroma(
-            embedding_function=embeddings,
-            persist_directory="./chroma_store"
-        )
-    else:
-        loader = UnstructuredWordDocumentLoader(DOC_PATH)
-        docs = loader.load()
-        
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = splitter.split_documents(docs)
-        print(f"✅ Loaded {len(chunks)} chunks.")
-        
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-        vectorstore = Chroma.from_documents(
-            chunks, 
-            embeddings, 
-            persist_directory="./chroma_store"
-        )
-        print("✅ Chroma vectorstore initialized.")
-    
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
-    print("✅ LLM initialized.")
+    """Start initialization in background - don't block startup"""
+    print("🚀 FastAPI starting up...")
+    # Run initialization in background thread
+    import threading
+    thread = threading.Thread(target=initialize_services, daemon=True)
+    thread.start()
+    print("🔄 Initialization running in background...")
 
 # ========== HELPER FUNCTIONS ==========
 
@@ -170,18 +202,48 @@ def format_requirements(intent: dict, question: str) -> str:
 
 @app.get("/")
 def root():
-    return {"status": "online", "message": "Proposal Generator API is running."}
+    """Root endpoint - always available"""
+    status = "initializing" if not is_initialized else "ready"
+    return {
+        "status": "online", 
+        "message": "Proposal Generator API is running.",
+        "initialization_status": status
+    }
 
 @app.get("/health")
 def health():
     """Health check endpoint for Render"""
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "initialized": is_initialized,
+        "error": initialization_error
+    }
+
+@app.get("/status")
+def status():
+    """Check initialization status"""
+    return {
+        "initialized": is_initialized,
+        "error": initialization_error,
+        "vectorstore_ready": vectorstore is not None,
+        "llm_ready": llm is not None
+    }
 
 @app.post("/ask")
 def ask(query: Query):
     try:
-        if vectorstore is None or llm is None:
-            raise HTTPException(status_code=503, detail="Service not initialized yet. Please try again.")
+        # Check if services are initialized
+        if initialization_error:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Initialization failed: {initialization_error}"
+            )
+        
+        if not is_initialized or vectorstore is None or llm is None:
+            raise HTTPException(
+                status_code=503, 
+                detail="Service is still initializing. Please try again in a few moments. Check /status endpoint."
+            )
         
         print(f"🟢 Received query: {query.question}")
 
@@ -211,13 +273,17 @@ def ask(query: Query):
         print("✅ Proposal generated successfully.")
         return {"answer": cleaned, "extracted_intent": intent}
 
+    except HTTPException:
+        raise
     except Exception as e:
         print("❌ Error in /ask:", str(e))
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
 # ========== MAIN ==========
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    # ✅ Critical: bind to 0.0.0.0 and start immediately
+    # Start server immediately without waiting for initialization
     uvicorn.run(app, host="0.0.0.0", port=port)
