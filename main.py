@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from langchain_community.document_loaders import Docx2txtLoader  # Lightweight Word loader
+from langchain_community.document_loaders import Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
@@ -64,12 +64,25 @@ Example:
 
 proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional project proposal.
 
-Rules:
-1. Use only information from the provided context — never invent new details.
-2. Do NOT include any sections titled "Conclusion", "Summary", or similar endings.
-3. Do NOT add closing remarks like "We look forward..." or "This proposal provides..."
-4. Remove any placeholder text like "[Information not available in knowledge base]".
-5. The proposal should end naturally after the last relevant section (e.g., Timeline, Pricing, or Maintenance).
+CRITICAL RULES TO PREVENT HALLUCINATION:
+1. ONLY use information explicitly stated in the CONTEXT below - never add features, technologies, or details not mentioned
+2. If a feature or detail is NOT in the context, DO NOT include it in the proposal
+3. Do NOT invent technical specifications, timelines, or pricing not provided in the context
+4. Do NOT add generic industry knowledge or assumptions about the project
+5. Keep bullet points from the context but expand them into 2-3 descriptive sentences that explain the feature's purpose and benefit
+6. Each feature description should include: what it is, how it helps, and why it matters
+7. Use the EXACT feature names from the context - do not rename or reinterpret them
+8. Do NOT include any sections titled "Conclusion", "Summary", or similar endings
+9. Do NOT add closing remarks like "We look forward..." or "This proposal provides..."
+10. Remove any placeholder text like "[Information not available in knowledge base]"
+11. The proposal should end naturally after the last relevant section (e.g., Timeline, Pricing, or Maintenance)
+12. Maintain a professional, confident tone while staying strictly within the provided context
+
+FORMAT GUIDELINES:
+- Convert bullet points into descriptive paragraphs (2-3 sentences per feature)
+- Use clear section headers from the context
+- Explain the "what", "why", and "benefit" for each feature
+- Keep descriptions concise but informative (not just bullet points, not overly lengthy)
 
 ---
 
@@ -81,7 +94,7 @@ Rules:
 
 ---
 
-Generate the complete proposal below:
+Generate the complete proposal below using ONLY information from the context:
 """
 
 intent_prompt = PromptTemplate(
@@ -108,12 +121,12 @@ def initialize_services():
     try:
         print("📄 Starting initialization...")
         
-        # Initialize LLM first (lightweight)
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
+        # Initialize LLM with lower temperature for more consistent output
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3, api_key=openai_api_key)
         print("✅ LLM initialized.")
         
-        # Initialize embeddings
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
+        # Initialize embeddings with LARGE model for better retrieval
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-large", api_key=openai_api_key)
         
         # Check if vectorstore already exists
         if os.path.exists("./chroma_store"):
@@ -128,7 +141,12 @@ def initialize_services():
             loader = Docx2txtLoader(DOC_PATH)
             docs = loader.load()
             
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            # Optimized chunking for better context retrieval
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=800,
+                chunk_overlap=150,
+                separators=["\n\n", "\n", ". ", " ", ""]
+            )
             chunks = splitter.split_documents(docs)
             print(f"✅ Loaded {len(chunks)} chunks.")
             
@@ -252,14 +270,26 @@ def ask(query: Query):
 
         requirements = format_requirements(intent, query.question)
 
-        # Retrieve from Chroma
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+        # Enhanced retrieval with more relevant chunks
+        retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 12}  # Increased from 8 to get more context
+        )
         related_docs = retriever.invoke(query.question)
 
         if not related_docs:
             raise HTTPException(status_code=404, detail="No related context found in document.")
 
-        context = "\n\n".join([doc.page_content for doc in related_docs])
+        # Deduplicate and organize context
+        seen_content = set()
+        unique_docs = []
+        for doc in related_docs:
+            content = doc.page_content.strip()
+            if content and content not in seen_content:
+                seen_content.add(content)
+                unique_docs.append(content)
+        
+        context = "\n\n---\n\n".join(unique_docs)
 
         filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
         response = llm.invoke(filled_prompt)
@@ -268,7 +298,7 @@ def ask(query: Query):
         cleaned = response.content
         cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'(?i)(##?\s*Conclusion.*|##?\s*Summary.*|This proposal provides.*|We look forward.*)$', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'\n{2,}', '\n\n', cleaned).strip()
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
         print("✅ Proposal generated successfully.")
         return {"answer": cleaned, "extracted_intent": intent}
@@ -285,5 +315,4 @@ def ask(query: Query):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    # Start server immediately without waiting for initialization
     uvicorn.run(app, host="0.0.0.0", port=port)
