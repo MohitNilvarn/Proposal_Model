@@ -62,31 +62,47 @@ Example:
 }
 """
 
-proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional project proposal.
+proposal_prompt_template = """You are a professional proposal writer for AppSynergies. Use ONLY the context provided below to generate a comprehensive project proposal.
 
-CRITICAL RULES TO PREVENT HALLUCINATION:
-1. ONLY use information explicitly stated in the CONTEXT below - never add features, technologies, or details not mentioned
-2. If a feature or detail is NOT in the context, DO NOT include it in the proposal
-3. Do NOT invent technical specifications, timelines, or pricing not provided in the context
-4. Do NOT add generic industry knowledge or assumptions about the project
-5. Keep bullet points from the context but expand them into 2-3 descriptive sentences that explain the feature's purpose and benefit
-6. Each feature description should include: what it is, how it helps, and why it matters
-7. Use the EXACT feature names from the context - do not rename or reinterpret them
-8. Do NOT include any sections titled "Conclusion", "Summary", or similar endings
-9. Do NOT add closing remarks like "We look forward..." or "This proposal provides..."
-10. Remove any placeholder text like "[Information not available in knowledge base]"
-11. The proposal should end naturally after the last relevant section (e.g., Timeline, Pricing, or Maintenance)
-12. Maintain a professional, confident tone while staying strictly within the provided context
+STRICT ANTI-HALLUCINATION RULES:
+1. ONLY use features, specifications, and details explicitly mentioned in the CONTEXT below
+2. NEVER invent or add features not present in the context
+3. NEVER add technical details, timelines, or capabilities not stated in the context
+4. If information is not in the context, skip that section entirely - DO NOT make assumptions
+5. Use EXACT feature names and terminology from the context
+6. DO NOT add generic software development knowledge or common industry practices
 
-FORMAT GUIDELINES:
-- Convert bullet points into descriptive paragraphs (2-3 sentences per feature)
-- Use clear section headers from the context
-- Explain the "what", "why", and "benefit" for each feature
-- Keep descriptions concise but informative (not just bullet points, not overly lengthy)
+WRITING STYLE (based on AppSynergies proposal format):
+1. Convert each bullet point into a clear, professional description (1-2 sentences)
+2. Each feature description should follow this pattern:
+   - Start with the feature name in bold
+   - Follow with a concise explanation of what it does and its benefit
+   - Keep descriptions professional but direct
+   - Example: "**User Registration**: A simple and secure registration process using email, phone number, or social media accounts."
+
+3. For each feature, explain:
+   - What the feature is
+   - How it works (if specified in context)
+   - What benefit it provides to users/vendors/admin
+
+4. Maintain professional business tone throughout
+5. Use active voice and present tense
+6. Keep descriptions concise - aim for 1-2 sentences per feature
+7. Group related features under appropriate section headers from the context
+
+FORMATTING RULES:
+1. Use section headers exactly as they appear in the context (e.g., "User Registration and Verification:", "Website Features:", "Admin Panel")
+2. Present features as numbered lists with bold feature names followed by descriptions
+3. DO NOT include "Conclusion", "Summary", or closing statements
+4. DO NOT add phrases like "We look forward to..." or "This proposal provides..."
+5. End naturally after the last feature section
+6. Remove any placeholder text like "[Information not available]"
+
+CRITICAL: Stay strictly within the provided context. If a detail is not explicitly mentioned, do not include it.
 
 ---
 
-**CONTEXT:**
+**CONTEXT FROM KNOWLEDGE BASE:**
 {context}
 
 **PROJECT REQUIREMENTS:**
@@ -94,7 +110,7 @@ FORMAT GUIDELINES:
 
 ---
 
-Generate the complete proposal below using ONLY information from the context:
+Generate the professional proposal below using ONLY information from the context:
 """
 
 intent_prompt = PromptTemplate(
@@ -121,11 +137,11 @@ def initialize_services():
     try:
         print("📄 Starting initialization...")
         
-        # Initialize LLM with lower temperature for more consistent output
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3, api_key=openai_api_key)
+        # Initialize LLM with slightly higher temperature for natural writing
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=openai_api_key)
         print("✅ LLM initialized.")
         
-        # Initialize embeddings with LARGE model for better retrieval
+        # Initialize embeddings with LARGE model for better retrieval accuracy
         embeddings = OpenAIEmbeddings(model="text-embedding-3-large", api_key=openai_api_key)
         
         # Check if vectorstore already exists
@@ -141,11 +157,12 @@ def initialize_services():
             loader = Docx2txtLoader(DOC_PATH)
             docs = loader.load()
             
-            # Optimized chunking for better context retrieval
+            # Optimized chunking strategy for better context preservation
             splitter = RecursiveCharacterTextSplitter(
-                chunk_size=800,
-                chunk_overlap=150,
-                separators=["\n\n", "\n", ". ", " ", ""]
+                chunk_size=1000,
+                chunk_overlap=200,
+                separators=["\n\n\n", "\n\n", "\n", ". ", " ", ""],
+                length_function=len
             )
             chunks = splitter.split_documents(docs)
             print(f"✅ Loaded {len(chunks)} chunks.")
@@ -270,35 +287,62 @@ def ask(query: Query):
 
         requirements = format_requirements(intent, query.question)
 
-        # Enhanced retrieval with more relevant chunks
+        # Enhanced retrieval with higher K for comprehensive context
         retriever = vectorstore.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": 12}  # Increased from 8 to get more context
+            search_kwargs={
+                "k": 15  # Increased for more comprehensive feature coverage
+            }
         )
         related_docs = retriever.invoke(query.question)
 
         if not related_docs:
             raise HTTPException(status_code=404, detail="No related context found in document.")
 
-        # Deduplicate and organize context
+        # Deduplicate while preserving order and context
         seen_content = set()
         unique_docs = []
         for doc in related_docs:
             content = doc.page_content.strip()
+            # More aggressive deduplication - check for substantial overlap
             if content and content not in seen_content:
                 seen_content.add(content)
                 unique_docs.append(content)
         
-        context = "\n\n---\n\n".join(unique_docs)
+        # Provide clear section separation in context
+        context = "\n\n---SECTION---\n\n".join(unique_docs)
 
         filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
         response = llm.invoke(filled_prompt)
 
-        # Clean proposal
+        # Enhanced cleaning
         cleaned = response.content
+        
+        # Remove placeholder text
         cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
-        cleaned = re.sub(r'(?i)(##?\s*Conclusion.*|##?\s*Summary.*|This proposal provides.*|We look forward.*)$', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        cleaned = re.sub(r'\[Not available[^\]]*\]', '', cleaned)
+        cleaned = re.sub(r'\[Note:.*?\]', '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove conclusion/summary sections
+        cleaned = re.sub(
+            r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts|Next Steps|In Summary).*?)(?=##|$)', 
+            '', 
+            cleaned, 
+            flags=re.DOTALL
+        )
+        
+        # Remove closing statements
+        cleaned = re.sub(
+            r'(?i)(This proposal (provides|outlines|presents).*|We look forward.*|Thank you for considering.*|Feel free to reach out.*|Please don\'t hesitate.*)$',
+            '',
+            cleaned,
+            flags=re.DOTALL
+        )
+        
+        # Clean up excessive whitespace
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r' {2,}', ' ', cleaned)
+        cleaned = cleaned.strip()
 
         print("✅ Proposal generated successfully.")
         return {"answer": cleaned, "extracted_intent": intent}
