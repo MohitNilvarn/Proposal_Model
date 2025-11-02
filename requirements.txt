@@ -10,4 +10,5 @@ chromadb
 python-dotenv
 python-multipart
 docx2txt
+tiktoken
 # ✅ Required for Docx2txtLoader
