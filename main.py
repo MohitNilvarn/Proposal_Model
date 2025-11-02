@@ -180,8 +180,8 @@ def initialize_services():
             
             # Step 2: Initialize text splitter
             splitter = RecursiveCharacterTextSplitter(
-                chunk_size=2000,
-                chunk_overlap=350,
+                chunk_size=5000,
+                chunk_overlap=500,
                 separators=["\n\n", "\n", "•", "-", ":", ". "],
                 length_function=len
             )
