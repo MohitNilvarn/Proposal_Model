@@ -68,39 +68,71 @@ proposal_prompt_template = """You are a professional proposal writer for AppSyne
 
 === CRITICAL ANTI-HALLUCINATION RULES ===
 
-1. **ONLY USE CONTEXT**: Every feature, specification, and detail MUST come directly from the provided context. If it's not in the context, DO NOT include it.
+1. **STRICT CONTEXT ADHERENCE**: 
+   - Every single word in your output must be directly traceable to the provided context
+   - If information appears in the context for a DIFFERENT project, DO NOT use it
+   - Each proposal section (Admin Panel, App, Pricing) belongs to ONE specific project only
 
-2. **COMPLETE EXTRACTION**: Include ALL features mentioned in the context for each section. Do not skip or summarize features - each numbered point in the context should appear in your output.
+2. **PRICING ACCURACY (CRITICAL)**:
+   - ONLY use pricing from the EXACT matching proposal in the context
+   - DO NOT mix pricing details from different proposals
+   - DO NOT add payment schedules, discounts, or terms unless they appear in the SAME proposal section
+   - If pricing section says "Total: $1210 USD", output EXACTLY that - no payment breakdowns unless explicitly stated
 
-3. **EXACT TERMINOLOGY**: Use the exact feature names and technical terms from the context. Do not paraphrase or use synonyms.
+3. **COMPLETE FEATURE EXTRACTION**: 
+   - Include ALL numbered features from each relevant section
+   - Do not skip, summarize, or combine features
+   - Each numbered point in context = one numbered point in output
 
-4. **NO ASSUMPTIONS**: Do not add:
-   - Generic software features
-   - Industry best practices not mentioned
-   - Technical implementation details not specified
-   - Timeline or cost estimates not provided
-   - Features from your general knowledge
+4. **NO CROSS-CONTAMINATION**:
+   - Features from "Food Delivery Platform" should NEVER appear in "Ecommerce Website" proposal
+   - Pricing from one proposal should NEVER leak into another
+   - When you see multiple proposals in context, use ONLY the one matching the requirements
 
-5. **VERIFY COMPLETENESS**: Before finishing, mentally check that you've included every numbered point from each relevant section in the context.
+5. **ZERO ASSUMPTIONS**:
+   - Do not add generic features ("user-friendly interface", "responsive design") unless explicitly stated
+   - Do not infer technical details not mentioned
+   - Do not add payment terms, timelines, or conditions not in the context
+
+6. **SECTION ISOLATION**:
+   - Each section (Admin Panel, App, Website, Pricing) should come from the SAME proposal
+   - Before including any detail, verify it's from the correct proposal title in the context
 
 === FORMATTING GUIDELINES ===
 
-1. **Section Headers**: Use clear headers matching the context (e.g., "Admin Panel Features:", "Mobile Application Features:")
+1. **Structure**:
+   ```
+   [Project Title from Context]
+   
+   Admin Panel Features:
+   1. **Feature Name**: Description in 1-2 sentences
+   2. **Feature Name**: Description in 1-2 sentences
+   
+   App Features:
+   1. **Feature Name**: Description in 1-2 sentences
+   
+   Pricing:
+   1. Design: $XXX USD
+   2. Development: $XXX USD
+   3. Total: $XXX USD
+   ```
 
-2. **Feature Format**: For each feature, write:
-   - **Feature Name**: Brief 1-2 sentence description explaining what it does and its benefit
-   - Example: "**User Management**: Administrators can view, edit, and manage all user accounts with the ability to activate, deactivate, or block users based on activity or policy compliance."
+2. **Feature Descriptions**: 
+   - Start with bold feature name from context
+   - Follow with concise explanation (1-2 sentences)
+   - Example: "**User Management**: Administrators can view, edit, and manage all user accounts with the ability to activate, deactivate, or block users."
 
-3. **Numbering**: Maintain numbered lists exactly as they appear in the context
+3. **Pricing Format**:
+   - List each cost item exactly as shown in context
+   - Use exact numbers and currency from context
+   - Do NOT add payment schedules unless they appear in the SAME pricing section
 
-4. **No Fluff**: Do NOT add:
-   - Introductory paragraphs
-   - Conclusion sections
-   - "We look forward to..." statements
-   - "This proposal provides..." summaries
-   - Marketing language not in the context
-
-5. **Clean Output**: Remove any placeholder text like "[Information not available]"
+4. **What NOT to Include**:
+   - NO introductory paragraphs
+   - NO conclusions or "we look forward to" statements
+   - NO mixed content from other proposals
+   - NO generic marketing language
+   - NO payment terms from other proposals
 
 === CONTEXT FROM KNOWLEDGE BASE ===
 {context}
@@ -108,15 +140,16 @@ proposal_prompt_template = """You are a professional proposal writer for AppSyne
 === PROJECT REQUIREMENTS ===
 {requirements}
 
-=== INSTRUCTIONS ===
-Now generate a comprehensive proposal that:
-1. Extracts ALL features from relevant sections in the context
-2. Formats each feature professionally with clear descriptions
-3. Groups features under appropriate section headers
-4. Stays 100% faithful to the source material
-5. Ends naturally after the last feature (no conclusion)
+=== VERIFICATION CHECKLIST (Follow mentally before responding) ===
+Before generating output, verify:
+1. ✓ Is this feature from the CORRECT proposal matching the requirements?
+2. ✓ Is this pricing from the SAME proposal as the features?
+3. ✓ Have I included ALL numbered features from relevant sections?
+4. ✓ Did I add ANY information not explicitly in the context?
+5. ✓ Are there any payment terms that came from a different proposal?
 
-Begin the proposal below:
+=== OUTPUT ===
+Generate the proposal below, ensuring complete accuracy and zero hallucination:
 """
 
 intent_prompt = PromptTemplate(
@@ -148,55 +181,87 @@ def count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
 
 def intelligent_chunk_proposals_token_aware(text: str):
     """
-    HYBRID APPROACH: Semantic chunking with token awareness
-    
-    Benefits:
-    1. Respects semantic boundaries (numbered lists, sections)
-    2. Uses token counts for precise size control
-    3. Optimizes for embedding model limits (8191 tokens for text-embedding-3-large)
-    4. Prevents mid-feature splits
+    IMPROVED: Keeps entire proposals together to prevent cross-contamination
     
     Strategy:
-    - Max chunk size: 1000 tokens (~750 words) - optimal for embedding quality
-    - Overlap: 150 tokens - ensures context continuity
-    - Semantic boundaries: Always respected over token limits
+    1. Split document into complete proposals (each platform/product)
+    2. Within each proposal, chunk by sections (Admin Panel, App, Pricing)
+    3. Never mix content from different proposals
+    4. Add strong proposal boundaries in metadata
     """
     
     text = text.strip()
     
-    # Pattern to identify major proposal boundaries
-    proposal_pattern = r'(?=(?:^|\n)(?:[A-Z][a-zA-Z\s]{3,}(?:Platform|Website|App|System|Portal|Tool|Service))\s*:?\s*\n)'
+    # More precise proposal detection
+    proposal_pattern = r'\n(?=[A-Z][a-zA-Z\s]{3,}(?:Platform|Website|App|System|Portal|Tool|Service|CRM|PICSART|SHOPIFY)[:\s]*\n)'
     
     raw_proposals = re.split(proposal_pattern, text)
-    proposals = [p.strip() for p in raw_proposals if len(p.strip()) > 100]
+    proposals = []
     
-    print(f"📋 Identified {len(proposals)} major proposals")
+    for p in raw_proposals:
+        p = p.strip()
+        # More strict filtering
+        if len(p) > 200 and not p.startswith(('Note', 'Payment', 'Discount')):
+            proposals.append(p)
+    
+    print(f"📋 Identified {len(proposals)} distinct proposals")
     
     all_chunks = []
     
     for proposal_idx, proposal_text in enumerate(proposals, start=1):
-        # Extract proposal title
-        title_match = re.match(r'^([A-Z][a-zA-Z\s]{3,}(?:Platform|Website|App|System|Portal|Tool|Service))', proposal_text)
-        proposal_title = title_match.group(1).strip() if title_match else f"Proposal {proposal_idx}"
+        # Extract proposal title more carefully
+        title_lines = proposal_text.split('\n')[:3]
+        proposal_title = None
         
-        # Split by major sections
-        section_pattern = r'\n(?=>?\s*(?:Admin Panel|App|Website|Landing Page|Development|Pricing|Technologies|Business Requirements|User Management|Vendor Management)[:\s])'
+        for line in title_lines:
+            line = line.strip()
+            if any(keyword in line for keyword in ['Platform', 'Website', 'App', 'System', 'Portal', 'Tool', 'Service', 'CRM']):
+                proposal_title = line.replace('>', '').replace(':', '').strip()
+                break
+        
+        if not proposal_title:
+            proposal_title = f"Proposal {proposal_idx}"
+        
+        print(f"  📄 Processing: {proposal_title}")
+        
+        # Split by major sections - more comprehensive list
+        section_pattern = r'\n(?=>?\s*(?:Admin Panel|App|Website|Landing Page|Development|Pricing|Costing|Technologies|Business Requirements|User Management|Vendor Management|Mobile Application|Main Website|Web Based App|Webpage)[:\s])'
         sections = re.split(section_pattern, proposal_text)
         
         for section_idx, section in enumerate(sections):
             section = section.strip()
-            if len(section) < 50:
+            if len(section) < 30:
                 continue
             
             # Extract section name
             section_name_match = re.match(r'>?\s*([^:\n]+)[:\n]', section)
             section_name = section_name_match.group(1).strip() if section_name_match else "General"
             
-            # Token-aware semantic chunking
+            # Special handling for Pricing sections - keep them complete
+            if any(keyword in section_name.lower() for keyword in ['pricing', 'costing', 'estimate']):
+                # Don't chunk pricing sections - keep them whole
+                doc = Document(
+                    page_content=f"=== {proposal_title} - {section_name} ===\n\n{section}",
+                    metadata={
+                        "proposal_id": proposal_idx,
+                        "proposal_title": proposal_title,
+                        "section_name": section_name,
+                        "section_type": "pricing",
+                        "is_complete_section": True,
+                        "token_count": count_tokens(section),
+                        "chunk_id": 1,
+                        "total_chunks": 1
+                    }
+                )
+                all_chunks.append(doc)
+                print(f"    💰 Pricing section kept complete: {count_tokens(section)} tokens")
+                continue
+            
+            # For other sections, use token-aware chunking
             section_chunks = chunk_by_features_with_tokens(
                 section, 
-                max_tokens=1000,  # Optimal size for embeddings
-                overlap_tokens=150,
+                max_tokens=1200,  # Slightly larger for more complete features
+                overlap_tokens=200,
                 proposal_title=proposal_title,
                 section_name=section_name
             )
@@ -208,14 +273,18 @@ def intelligent_chunk_proposals_token_aware(text: str):
                         "proposal_id": proposal_idx,
                         "proposal_title": proposal_title,
                         "section_name": section_name,
+                        "section_type": "features",
                         "section_id": section_idx,
                         "chunk_id": chunk_idx,
                         "total_chunks": len(section_chunks),
                         "token_count": chunk_data['tokens'],
-                        "feature_count": chunk_data['features']
+                        "feature_count": chunk_data['features'],
+                        "is_complete_section": chunk_idx == 1 and len(section_chunks) == 1
                     }
                 )
                 all_chunks.append(doc)
+            
+            print(f"    ✓ {section_name}: {len(section_chunks)} chunks")
     
     total_tokens = sum(count_tokens(doc.page_content) for doc in all_chunks)
     print(f"✅ Created {len(all_chunks)} chunks | Total tokens: {total_tokens:,}")
@@ -223,31 +292,15 @@ def intelligent_chunk_proposals_token_aware(text: str):
     return all_chunks
 
 
-def chunk_by_features_with_tokens(text: str, max_tokens: int = 1000, overlap_tokens: int = 150, 
+def chunk_by_features_with_tokens(text: str, max_tokens: int = 1200, overlap_tokens: int = 200, 
                                    proposal_title: str = "", section_name: str = ""):
-    """
-    Chunk text by complete features while respecting token limits.
+    """Chunk text by complete features while respecting token limits"""
     
-    SEMANTIC PRIORITY:
-    1. Keep numbered items together
-    2. Don't split in middle of sentences
-    3. Maintain feature descriptions intact
-    4. Add overlap for context continuity
-    
-    TOKEN AWARENESS:
-    - Use actual token counting (not char approximation)
-    - Stay under max_tokens for embedding efficiency
-    - Overlap measured in tokens for precision
-    """
-    
-    # Add section header for context
-    header = f"\n{proposal_title} - {section_name}\n\n"
+    header = f"\n=== {proposal_title} - {section_name} ===\n\n"
     header_tokens = count_tokens(header)
+    effective_max = max_tokens - header_tokens - 50
     
-    # Adjust max tokens to account for header
-    effective_max = max_tokens - header_tokens - 50  # 50 token buffer
-    
-    # Split by numbered items (features)
+    # Split by numbered items
     numbered_pattern = r'(?=\n\s*\d+\.?\s+)'
     features = re.split(numbered_pattern, text)
     features = [f.strip() for f in features if f.strip()]
@@ -261,9 +314,7 @@ def chunk_by_features_with_tokens(text: str, max_tokens: int = 1000, overlap_tok
     for feature in features:
         feature_tokens = count_tokens(feature)
         
-        # If single feature exceeds limit, split it carefully
         if feature_tokens > effective_max:
-            # Save current chunk if exists
             if current_features:
                 chunks.append({
                     'text': current_chunk.strip(),
@@ -271,44 +322,36 @@ def chunk_by_features_with_tokens(text: str, max_tokens: int = 1000, overlap_tok
                     'features': len(current_features)
                 })
             
-            # Split large feature by sentences
             sub_chunks = split_large_feature_by_sentences(feature, effective_max, overlap_tokens, header)
             chunks.extend(sub_chunks)
             
-            # Reset for next chunk
             current_chunk = header
             current_tokens = header_tokens
             current_features = []
             overlap_buffer = []
             continue
         
-        # Check if adding this feature exceeds limit
         if current_tokens + feature_tokens > effective_max and current_features:
-            # Finalize current chunk
             chunks.append({
                 'text': current_chunk.strip(),
                 'tokens': current_tokens,
                 'features': len(current_features)
             })
             
-            # Start new chunk with overlap
             overlap_text = create_overlap(overlap_buffer, overlap_tokens)
             current_chunk = header + overlap_text + "\n\n" + feature
             current_tokens = header_tokens + count_tokens(overlap_text) + feature_tokens
             current_features = [feature]
             overlap_buffer = [feature]
         else:
-            # Add to current chunk
             current_chunk += "\n\n" + feature
             current_tokens += feature_tokens
             current_features.append(feature)
             overlap_buffer.append(feature)
             
-            # Keep only last 3 features in overlap buffer
             if len(overlap_buffer) > 3:
                 overlap_buffer.pop(0)
     
-    # Add final chunk
     if current_features:
         chunks.append({
             'text': current_chunk.strip(),
@@ -320,11 +363,9 @@ def chunk_by_features_with_tokens(text: str, max_tokens: int = 1000, overlap_tok
 
 
 def split_large_feature_by_sentences(feature: str, max_tokens: int, overlap_tokens: int, header: str):
-    """Split a single large feature by sentences when it exceeds token limit"""
-    
+    """Split a single large feature by sentences"""
     sentences = re.split(r'(?<=[.!?])\s+', feature)
     chunks = []
-    
     current = header
     current_tokens = count_tokens(header)
     
@@ -338,12 +379,10 @@ def split_large_feature_by_sentences(feature: str, max_tokens: int, overlap_toke
                     'tokens': current_tokens,
                     'features': 1
                 })
-                # Start new with overlap (last part of current)
                 overlap = get_last_n_tokens(current, overlap_tokens)
                 current = header + overlap + " " + sentence
                 current_tokens = count_tokens(current)
             else:
-                # Single sentence too large, add as-is
                 chunks.append({
                     'text': header + sentence,
                     'tokens': count_tokens(header + sentence),
@@ -366,14 +405,13 @@ def split_large_feature_by_sentences(feature: str, max_tokens: int, overlap_toke
 
 
 def create_overlap(features_buffer: list, target_tokens: int) -> str:
-    """Create overlap text from recent features, targeting specific token count"""
+    """Create overlap text from recent features"""
     if not features_buffer:
         return ""
     
     overlap_text = ""
     overlap_tokens = 0
     
-    # Add features from end until we reach target tokens
     for feature in reversed(features_buffer):
         feature_tokens = count_tokens(feature)
         if overlap_tokens + feature_tokens <= target_tokens:
@@ -401,39 +439,39 @@ def get_last_n_tokens(text: str, n_tokens: int) -> str:
 
 # ========== BACKGROUND INITIALIZATION ==========
 def initialize_services():
-    """Initialize vectorstore and LLM in background"""
+    """Initialize vectorstore and LLM"""
     global vectorstore, llm, is_initialized, initialization_error, tokenizer
     
     try:
         print("📄 Starting initialization...")
         
-        # Initialize tokenizer
         tokenizer = tiktoken.get_encoding("cl100k_base")
         print("✅ Tokenizer initialized")
         
-        # Initialize LLM with better parameters for accuracy
+        # Lower temperature for stricter adherence
         llm = ChatOpenAI(
             model="gpt-4o-mini", 
-            temperature=0.1,
+            temperature=0.05,  # Even lower for pricing accuracy
             api_key=openai_api_key
         )
         print("✅ LLM initialized")
         
-        # Use better embeddings
         embeddings = OpenAIEmbeddings(
             model="text-embedding-3-large", 
             api_key=openai_api_key
         )
         print("✅ Embeddings initialized")
         
-        # Check if vectorstore exists
-        if os.path.exists("./chroma_store_v2"):  # New version to force rebuild
+        # Use new version to force rebuild with fixed chunking
+        persist_dir = "./chroma_store_v3"
+        
+        if os.path.exists(persist_dir):
             print("📦 Loading existing vectorstore...")
             vectorstore = Chroma(
                 embedding_function=embeddings,
-                persist_directory="./chroma_store_v2"
+                persist_directory=persist_dir
             )
-            print("✅ Vectorstore loaded from disk")
+            print("✅ Vectorstore loaded")
         elif os.path.exists(DOC_PATH):
             print(f"📄 Loading knowledge base from {DOC_PATH}")
             loader = Docx2txtLoader(DOC_PATH)
@@ -441,28 +479,21 @@ def initialize_services():
             
             full_text = "\n".join([d.page_content for d in docs])
             
-            # Use token-aware intelligent chunking
             chunked_docs = intelligent_chunk_proposals_token_aware(full_text)
             
-            print(f"✅ Created {len(chunked_docs)} chunks with token awareness")
-            
-            # Show sample metadata
-            if chunked_docs:
-                sample = chunked_docs[0]
-                print(f"📊 Sample chunk: {sample.metadata['token_count']} tokens, "
-                      f"{sample.metadata['feature_count']} features")
+            print(f"✅ Created {len(chunked_docs)} chunks with improved isolation")
             
             vectorstore = Chroma.from_documents(
                 chunked_docs,
                 embeddings,
-                persist_directory="./chroma_store_v2"
+                persist_directory=persist_dir
             )
-            print("✅ Chroma vectorstore created and persisted")
+            print("✅ Chroma vectorstore created")
         else:
             print(f"⚠️ Warning: {DOC_PATH} not found")
             vectorstore = Chroma(
                 embedding_function=embeddings,
-                persist_directory="./chroma_store_v2"
+                persist_directory=persist_dir
             )
         
         is_initialized = True
@@ -498,6 +529,7 @@ def extract_intent(question: str) -> dict:
     except Exception as e:
         print("❌ Error extracting intent:", e)
         return {}
+
 
 def format_requirements(intent: dict, question: str) -> str:
     parts = [f"**Original Request:** {question}\n"]
@@ -552,90 +584,95 @@ def ask(query: Query):
             raise HTTPException(status_code=500, detail=f"Initialization failed: {initialization_error}")
         
         if not is_initialized or vectorstore is None or llm is None:
-            raise HTTPException(status_code=503, detail="Service is still initializing. Please try again in a few moments. Check /status endpoint.")
+            raise HTTPException(status_code=503, detail="Service is still initializing.")
         
-        print(f"🟢 Received query: {query.question}")
+        print(f"🟢 Query: {query.question}")
 
         intent = extract_intent(query.question)
-        print("🧩 Extracted Intent:", intent)
+        print(f"🧩 Intent: {intent}")
 
         requirements = format_requirements(intent, query.question)
 
-        # Enhanced retrieval with MMR
+        # Enhanced retrieval with filtering
         retriever = vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={
-                "k": 35,  # More chunks for completeness
-                "fetch_k": 60,
-                "lambda_mult": 0.7
+                "k": 40,
+                "fetch_k": 70,
+                "lambda_mult": 0.75  # Higher for more relevance focus
             }
         )
         related_docs = retriever.invoke(query.question)
 
         if not related_docs:
-            raise HTTPException(status_code=404, detail="No related context found in document.")
+            raise HTTPException(status_code=404, detail="No related context found.")
 
-        # Group by proposal and section
-        chunks_by_section = {}
+        # Group by proposal with strict isolation
+        proposals_found = {}
+        
         for doc in related_docs:
             proposal_title = doc.metadata.get('proposal_title', 'Unknown')
             section_name = doc.metadata.get('section_name', 'General')
-            key = f"{proposal_title}::{section_name}"
             
-            if key not in chunks_by_section:
-                chunks_by_section[key] = {
-                    'chunks': [],
-                    'total_tokens': 0,
-                    'total_features': 0
+            if proposal_title not in proposals_found:
+                proposals_found[proposal_title] = {
+                    'sections': {},
+                    'total_chunks': 0,
+                    'relevance_score': 0
                 }
             
-            chunks_by_section[key]['chunks'].append(doc.page_content)
-            chunks_by_section[key]['total_tokens'] += doc.metadata.get('token_count', 0)
-            chunks_by_section[key]['total_features'] += doc.metadata.get('feature_count', 0)
+            if section_name not in proposals_found[proposal_title]['sections']:
+                proposals_found[proposal_title]['sections'][section_name] = []
+            
+            proposals_found[proposal_title]['sections'][section_name].append(doc.page_content)
+            proposals_found[proposal_title]['total_chunks'] += 1
         
-        # Reconstruct context
-        context_parts = []
-        for key, data in chunks_by_section.items():
-            proposal_title, section_name = key.split("::")
-            section_header = f"\n{'='*60}\n{proposal_title} - {section_name}\n{'='*60}\n"
-            section_content = "\n\n".join(data['chunks'])
-            context_parts.append(section_header + section_content)
-        
-        context = "\n\n".join(context_parts)
+        # Find the most relevant proposal (most chunks retrieved)
+        if proposals_found:
+            primary_proposal = max(proposals_found.items(), key=lambda x: x[1]['total_chunks'])[0]
+            print(f"🎯 Primary proposal identified: {primary_proposal}")
+            
+            # Build context from ONLY the primary proposal
+            context_parts = []
+            context_parts.append(f"\n{'='*80}\n PRIMARY PROPOSAL: {primary_proposal}\n{'='*80}\n")
+            
+            for section_name, chunks in proposals_found[primary_proposal]['sections'].items():
+                section_header = f"\n--- {section_name} ---\n"
+                section_content = "\n\n".join(chunks)
+                context_parts.append(section_header + section_content)
+            
+            context = "\n\n".join(context_parts)
+        else:
+            context = "\n\n".join([doc.page_content for doc in related_docs])
 
-        total_context_tokens = sum(data['total_tokens'] for data in chunks_by_section.values())
-        total_features = sum(data['total_features'] for data in chunks_by_section.values())
-        
-        print(f"📄 Retrieved {len(related_docs)} chunks from {len(chunks_by_section)} sections")
-        print(f"📊 Context: ~{total_context_tokens:,} tokens, ~{total_features} features")
+        print(f"📄 Using {proposals_found[primary_proposal]['total_chunks']} chunks from: {primary_proposal}")
 
         filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
         response = llm.invoke(filled_prompt)
 
-        # Clean up output
+        # Clean output
         cleaned = response.content
         cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Not available[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Note:.*?\]', '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts|Next Steps|In Summary).*?)(?=##|$)', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'(?i)(This proposal (provides|outlines|presents).*|We look forward.*|Thank you for considering.*|Feel free to reach out.*|Please don\'t hesitate.*)$', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts).*?)(?=##|$)', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'(?i)(This proposal.*|We look forward.*|Thank you for.*|Feel free.*|Please don\'t.*)$', '', cleaned, flags=re.DOTALL)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r' {2,}', ' ', cleaned)
         cleaned = cleaned.strip()
 
-        print("✅ Proposal generated successfully")
-        return {"answer": cleaned, "extracted_intent": intent}
+        print("✅ Proposal generated")
+        return {"answer": cleaned, "extracted_intent": intent, "primary_proposal": primary_proposal}
 
     except HTTPException:
         raise
     except Exception as e:
-        print("❌ Error in /ask:", str(e))
+        print(f"❌ Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
-# ========== MAIN ==========
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
