@@ -6,6 +6,8 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
 from langchain_core.prompts import PromptTemplate
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.documents import Document
+
 import os, re, json
 from dotenv import load_dotenv
 import asyncio
@@ -36,7 +38,6 @@ class Query(BaseModel):
 
 
 # ========== PROMPTS ==========
-
 intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
 
 Analyze the user's request and extract the following details as JSON:
@@ -129,6 +130,22 @@ llm = None
 is_initialized = False
 initialization_error = None
 
+
+# ========== PRE-SPLIT FUNCTION ==========
+def split_proposals(text: str):
+    """
+    Splits a long proposal document into individual proposals
+    using section titles like 'Platform', 'Website', or 'App'.
+    Returns a list of proposal strings.
+    """
+    text = text.strip()
+    pattern = r'(?=(?:[A-Z][a-zA-Z ]{2,}\s(?:Platform|Website|App|System)))'
+    sections = re.split(pattern, text)
+    proposals = [s.strip() for s in sections if len(s.strip()) > 100]
+    print(f"🧾 Found {len(proposals)} proposals in document.")
+    return proposals
+
+
 # ========== BACKGROUND INITIALIZATION ==========
 def initialize_services():
     """Initialize vectorstore and LLM in background"""
@@ -137,11 +154,10 @@ def initialize_services():
     try:
         print("📄 Starting initialization...")
         
-        # Initialize LLM with slightly higher temperature for natural writing
+        # Initialize LLM
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=openai_api_key)
         print("✅ LLM initialized.")
         
-        # Initialize embeddings with LARGE model for better retrieval accuracy
         embeddings = OpenAIEmbeddings(model="text-embedding-3-large", api_key=openai_api_key)
         
         # Check if vectorstore already exists
@@ -157,19 +173,36 @@ def initialize_services():
             loader = Docx2txtLoader(DOC_PATH)
             docs = loader.load()
             
-            # Optimized chunking strategy for better context preservation
+            full_text = "\n".join([d.page_content for d in docs])
+            
+            # Step 1: Split into proposals
+            proposals = split_proposals(full_text)
+            
+            # Step 2: Initialize text splitter
             splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                separators=["\n\n\n", "\n\n", "\n", ". ", " ", ""],
+                chunk_size=2000,
+                chunk_overlap=350,
+                separators=["\n\n", "\n", "•", "-", ":", ". "],
                 length_function=len
             )
-            chunks = splitter.split_documents(docs)
-            print(f"✅ Loaded {len(chunks)} chunks.")
+            
+            # Step 3: Chunk each proposal separately
+            chunked_docs = []
+            for idx, proposal_text in enumerate(proposals, start=1):
+                chunks = splitter.split_text(proposal_text)
+                for i, chunk in enumerate(chunks, start=1):
+                    chunked_docs.append(
+                        Document(
+                            page_content=chunk,
+                            metadata={"proposal_id": idx, "chunk_id": i}
+                        )
+                    )
+            
+            print(f"✅ Created {len(chunked_docs)} total chunks from {len(proposals)} proposals.")
             
             vectorstore = Chroma.from_documents(
-                chunks, 
-                embeddings, 
+                chunked_docs,
+                embeddings,
                 persist_directory="./chroma_store"
             )
             print("✅ Chroma vectorstore created and persisted.")
@@ -189,19 +222,19 @@ def initialize_services():
         import traceback
         traceback.print_exc()
 
-# ========== STARTUP EVENT (LIGHTWEIGHT) ==========
+
+# ========== STARTUP EVENT ==========
 @app.on_event("startup")
 async def startup_event():
     """Start initialization in background - don't block startup"""
     print("🚀 FastAPI starting up...")
-    # Run initialization in background thread
     import threading
     thread = threading.Thread(target=initialize_services, daemon=True)
     thread.start()
     print("🔄 Initialization running in background...")
 
-# ========== HELPER FUNCTIONS ==========
 
+# ========== HELPER FUNCTIONS ==========
 def extract_intent(question: str) -> dict:
     try:
         filled_prompt = intent_prompt.format(question=question)
@@ -233,11 +266,10 @@ def format_requirements(intent: dict, question: str) -> str:
         parts.append(f"**Services:** {', '.join(intent['services'])}")
     return "\n".join(parts)
 
-# ========== ROUTES ==========
 
+# ========== ROUTES ==========
 @app.get("/")
 def root():
-    """Root endpoint - always available"""
     status = "initializing" if not is_initialized else "ready"
     return {
         "status": "online", 
@@ -247,7 +279,6 @@ def root():
 
 @app.get("/health")
 def health():
-    """Health check endpoint for Render"""
     return {
         "status": "healthy",
         "initialized": is_initialized,
@@ -256,7 +287,6 @@ def health():
 
 @app.get("/status")
 def status():
-    """Check initialization status"""
     return {
         "initialized": is_initialized,
         "error": initialization_error,
@@ -267,18 +297,11 @@ def status():
 @app.post("/ask")
 def ask(query: Query):
     try:
-        # Check if services are initialized
         if initialization_error:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Initialization failed: {initialization_error}"
-            )
+            raise HTTPException(status_code=500, detail=f"Initialization failed: {initialization_error}")
         
         if not is_initialized or vectorstore is None or llm is None:
-            raise HTTPException(
-                status_code=503, 
-                detail="Service is still initializing. Please try again in a few moments. Check /status endpoint."
-            )
+            raise HTTPException(status_code=503, detail="Service is still initializing. Please try again in a few moments. Check /status endpoint.")
         
         print(f"🟢 Received query: {query.question}")
 
@@ -287,59 +310,34 @@ def ask(query: Query):
 
         requirements = format_requirements(intent, query.question)
 
-        # Enhanced retrieval with higher K for comprehensive context
         retriever = vectorstore.as_retriever(
             search_type="similarity",
-            search_kwargs={
-                "k": 15  # Increased for more comprehensive feature coverage
-            }
+            search_kwargs={"k": 15}
         )
         related_docs = retriever.invoke(query.question)
 
         if not related_docs:
             raise HTTPException(status_code=404, detail="No related context found in document.")
 
-        # Deduplicate while preserving order and context
         seen_content = set()
         unique_docs = []
         for doc in related_docs:
             content = doc.page_content.strip()
-            # More aggressive deduplication - check for substantial overlap
             if content and content not in seen_content:
                 seen_content.add(content)
                 unique_docs.append(content)
         
-        # Provide clear section separation in context
         context = "\n\n---SECTION---\n\n".join(unique_docs)
 
         filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
         response = llm.invoke(filled_prompt)
 
-        # Enhanced cleaning
         cleaned = response.content
-        
-        # Remove placeholder text
         cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Not available[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Note:.*?\]', '', cleaned, flags=re.IGNORECASE)
-        
-        # Remove conclusion/summary sections
-        cleaned = re.sub(
-            r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts|Next Steps|In Summary).*?)(?=##|$)', 
-            '', 
-            cleaned, 
-            flags=re.DOTALL
-        )
-        
-        # Remove closing statements
-        cleaned = re.sub(
-            r'(?i)(This proposal (provides|outlines|presents).*|We look forward.*|Thank you for considering.*|Feel free to reach out.*|Please don\'t hesitate.*)$',
-            '',
-            cleaned,
-            flags=re.DOTALL
-        )
-        
-        # Clean up excessive whitespace
+        cleaned = re.sub(r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts|Next Steps|In Summary).*?)(?=##|$)', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'(?i)(This proposal (provides|outlines|presents).*|We look forward.*|Thank you for considering.*|Feel free to reach out.*|Please don\'t hesitate.*)$', '', cleaned, flags=re.DOTALL)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r' {2,}', ' ', cleaned)
         cleaned = cleaned.strip()
@@ -354,6 +352,7 @@ def ask(query: Query):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
+
 
 # ========== MAIN ==========
 if __name__ == "__main__":
