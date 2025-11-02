@@ -23,7 +23,7 @@ if not openai_api_key:
 DOC_PATH = "Proposal/Proposal Knowledge Base.docx"
 
 # ========== FASTAPI APP ==========
-app = FastAPI(title="Proposal Generator API")
+app = FastAPI(title="Proposal Generator API - Multi-Agent")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,7 +38,7 @@ class Query(BaseModel):
     question: str
 
 
-# ========== PROMPTS ==========
+# ========== AGENT 1: RETRIEVER AGENT PROMPTS ==========
 intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
 
 Analyze the user's request and extract the following details as JSON:
@@ -64,75 +64,52 @@ Example:
 }
 """
 
-proposal_prompt_template = """You are a professional proposal writer for AppSynergies. Your task is to generate a comprehensive project proposal using ONLY the information provided in the context below.
+retriever_agent_prompt = """You are Agent 1: The Retriever Agent. Your ONLY job is to extract exact bullet points from the provided context.
 
-=== CRITICAL ANTI-HALLUCINATION RULES ===
+=== YOUR MISSION ===
+Extract ALL relevant features, specifications, and details from the context below in a structured bullet-point format.
 
-1. **STRICT CONTEXT ADHERENCE**: 
-   - Every single word in your output must be directly traceable to the provided context
-   - If information appears in the context for a DIFFERENT project, DO NOT use it
-   - Each proposal section (Admin Panel, App, Pricing) belongs to ONE specific project only
+=== CRITICAL RULES ===
+1. **EXACT EXTRACTION ONLY**: Copy bullet points/features EXACTLY as they appear in the context
+2. **NO ELABORATION**: Do not add descriptions, explanations, or additional sentences
+3. **NO HALLUCINATION**: Every single bullet point must exist in the context
+4. **COMPLETE EXTRACTION**: Include ALL numbered points from each relevant section
+5. **PRESERVE STRUCTURE**: Maintain section headers (Admin Panel, App, Website, Pricing)
+6. **PRESERVE NUMBERING**: Keep the original numbering from the context
 
-2. **PRICING ACCURACY (CRITICAL)**:
-   - ONLY use pricing from the EXACT matching proposal in the context
-   - DO NOT mix pricing details from different proposals
-   - DO NOT add payment schedules, discounts, or terms unless they appear in the SAME proposal section
-   - If pricing section says "Total: $1210 USD", output EXACTLY that - no payment breakdowns unless explicitly stated
+=== OUTPUT FORMAT ===
+Return a structured list following this exact format:
 
-3. **COMPLETE FEATURE EXTRACTION**: 
-   - Include ALL numbered features from each relevant section
-   - Do not skip, summarize, or combine features
-   - Each numbered point in context = one numbered point in output
+```
+PROPOSAL: [Exact proposal title from context]
 
-4. **NO CROSS-CONTAMINATION**:
-   - Features from "Food Delivery Platform" should NEVER appear in "Ecommerce Website" proposal
-   - Pricing from one proposal should NEVER leak into another
-   - When you see multiple proposals in context, use ONLY the one matching the requirements
+ADMIN PANEL:
+1. [Exact feature name/text from context]
+2. [Exact feature name/text from context]
+3. [Exact feature name/text from context]
 
-5. **ZERO ASSUMPTIONS**:
-   - Do not add generic features ("user-friendly interface", "responsive design") unless explicitly stated
-   - Do not infer technical details not mentioned
-   - Do not add payment terms, timelines, or conditions not in the context
+APP FEATURES:
+1. [Exact feature name/text from context]
+2. [Exact feature name/text from context]
 
-6. **SECTION ISOLATION**:
-   - Each section (Admin Panel, App, Website, Pricing) should come from the SAME proposal
-   - Before including any detail, verify it's from the correct proposal title in the context
+WEBSITE FEATURES:
+1. [Exact feature name/text from context]
 
-=== FORMATTING GUIDELINES ===
+PRICING:
+1. [Exact pricing line from context]
+2. [Exact pricing line from context]
+3. [Exact pricing line from context]
+```
 
-1. **Structure**:
-   ```
-   [Project Title from Context]
-   
-   Admin Panel Features:
-   1. **Feature Name**: Description in 1-2 sentences
-   2. **Feature Name**: Description in 1-2 sentences
-   
-   App Features:
-   1. **Feature Name**: Description in 1-2 sentences
-   
-   Pricing:
-   1. Design: $XXX USD
-   2. Development: $XXX USD
-   3. Total: $XXX USD
-   ```
+=== WHAT NOT TO DO ===
+❌ Do NOT write: "User Management: Allows administrators to manage users efficiently"
+✅ DO write: "User Management"
 
-2. **Feature Descriptions**: 
-   - Start with bold feature name from context
-   - Follow with concise explanation (1-2 sentences)
-   - Example: "**User Management**: Administrators can view, edit, and manage all user accounts with the ability to activate, deactivate, or block users."
+❌ Do NOT add explanations or descriptions
+✅ DO extract only the feature names/titles
 
-3. **Pricing Format**:
-   - List each cost item exactly as shown in context
-   - Use exact numbers and currency from context
-   - Do NOT add payment schedules unless they appear in the SAME pricing section
-
-4. **What NOT to Include**:
-   - NO introductory paragraphs
-   - NO conclusions or "we look forward to" statements
-   - NO mixed content from other proposals
-   - NO generic marketing language
-   - NO payment terms from other proposals
+❌ Do NOT combine or summarize features
+✅ DO list each feature separately
 
 === CONTEXT FROM KNOWLEDGE BASE ===
 {context}
@@ -140,31 +117,81 @@ proposal_prompt_template = """You are a professional proposal writer for AppSyne
 === PROJECT REQUIREMENTS ===
 {requirements}
 
-=== VERIFICATION CHECKLIST (Follow mentally before responding) ===
-Before generating output, verify:
-1. ✓ Is this feature from the CORRECT proposal matching the requirements?
-2. ✓ Is this pricing from the SAME proposal as the features?
-3. ✓ Have I included ALL numbered features from relevant sections?
-4. ✓ Did I add ANY information not explicitly in the context?
-5. ✓ Are there any payment terms that came from a different proposal?
-
-=== OUTPUT ===
-Generate the proposal below, ensuring complete accuracy and zero hallucination:
+=== YOUR OUTPUT (Extract bullet points below) ===
 """
 
+
+# ========== AGENT 2: WRITER AGENT PROMPTS ==========
+writer_agent_prompt = """You are Agent 2: The Writer Agent. Your job is to elaborate the bullet points provided by Agent 1 into professional descriptions.
+
+=== YOUR MISSION ===
+Take each bullet point from Agent 1 and expand it into a clear, professional 1-2 sentence description.
+
+=== CRITICAL ANTI-HALLUCINATION RULES ===
+1. **ONLY ELABORATE GIVEN BULLETS**: Work ONLY with the bullet points provided by Agent 1
+2. **NO NEW FEATURES**: Do not add features not in Agent 1's list
+3. **STAY ON TOPIC**: Describe only what the bullet point name suggests - do not invent details
+4. **USE CONTEXT**: Refer to the original context to ensure accuracy of your descriptions
+5. **GENERIC IS OKAY**: If context lacks details, write a generic but accurate description based on the feature name
+6. **NO ASSUMPTIONS**: Do not add technical specs, timelines, or implementation details not in context
+
+=== ELABORATION GUIDELINES ===
+
+For each bullet point, write:
+- **[Feature Name]**: [1-2 sentence description explaining what it does and its benefit]
+
+Example transformations:
+
+Input: "User Management"
+Output: "**User Management**: Administrators can view, edit, and manage all user accounts with the ability to activate, deactivate, or block users based on their activity and policy compliance."
+
+Input: "Payment Integration"
+Output: "**Payment Integration**: Secure integration with multiple payment gateways to support credit/debit cards, digital wallets, and other payment methods for seamless transactions."
+
+Input: "Push Notifications"
+Output: "**Push Notifications**: Real-time alerts and updates sent directly to users' devices to inform them about orders, promotions, system updates, and important events."
+
+=== DESCRIPTION FORMULA ===
+1. Start with what the feature does (action/capability)
+2. Add the benefit or purpose
+3. Keep it concise (1-2 sentences max)
+4. Use professional business language
+
+=== WHAT TO AVOID ===
+❌ "This feature will revolutionize your business" (marketing fluff)
+❌ "Built using React and Node.js" (tech details not in context)
+❌ "Launching in Q1 2024" (timeline assumptions)
+❌ "The most advanced system available" (subjective claims)
+
+=== ORIGINAL CONTEXT (for reference only) ===
+{context}
+
+=== BULLET POINTS FROM AGENT 1 ===
+{bullet_points}
+
+=== YOUR OUTPUT (Elaborate each bullet point below) ===
+"""
+
+# ========== PROMPT TEMPLATES ==========
 intent_prompt = PromptTemplate(
     template=intent_extraction_prompt,
     input_variables=["question"]
 )
 
-proposal_prompt = PromptTemplate(
-    template=proposal_prompt_template,
+retriever_prompt = PromptTemplate(
+    template=retriever_agent_prompt,
     input_variables=["context", "requirements"]
+)
+
+writer_prompt = PromptTemplate(
+    template=writer_agent_prompt,
+    input_variables=["context", "bullet_points"]
 )
 
 # ========== GLOBAL VARIABLES ==========
 vectorstore = None
-llm = None
+retriever_agent = None  # Agent 1
+writer_agent = None      # Agent 2
 is_initialized = False
 initialization_error = None
 tokenizer = None
@@ -182,17 +209,10 @@ def count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
 def intelligent_chunk_proposals_token_aware(text: str):
     """
     IMPROVED: Keeps entire proposals together to prevent cross-contamination
-    
-    Strategy:
-    1. Split document into complete proposals (each platform/product)
-    2. Within each proposal, chunk by sections (Admin Panel, App, Pricing)
-    3. Never mix content from different proposals
-    4. Add strong proposal boundaries in metadata
     """
     
     text = text.strip()
     
-    # More precise proposal detection
     proposal_pattern = r'\n(?=[A-Z][a-zA-Z\s]{3,}(?:Platform|Website|App|System|Portal|Tool|Service|CRM|PICSART|SHOPIFY)[:\s]*\n)'
     
     raw_proposals = re.split(proposal_pattern, text)
@@ -200,7 +220,6 @@ def intelligent_chunk_proposals_token_aware(text: str):
     
     for p in raw_proposals:
         p = p.strip()
-        # More strict filtering
         if len(p) > 200 and not p.startswith(('Note', 'Payment', 'Discount')):
             proposals.append(p)
     
@@ -209,7 +228,6 @@ def intelligent_chunk_proposals_token_aware(text: str):
     all_chunks = []
     
     for proposal_idx, proposal_text in enumerate(proposals, start=1):
-        # Extract proposal title more carefully
         title_lines = proposal_text.split('\n')[:3]
         proposal_title = None
         
@@ -224,7 +242,6 @@ def intelligent_chunk_proposals_token_aware(text: str):
         
         print(f"  📄 Processing: {proposal_title}")
         
-        # Split by major sections - more comprehensive list
         section_pattern = r'\n(?=>?\s*(?:Admin Panel|App|Website|Landing Page|Development|Pricing|Costing|Technologies|Business Requirements|User Management|Vendor Management|Mobile Application|Main Website|Web Based App|Webpage)[:\s])'
         sections = re.split(section_pattern, proposal_text)
         
@@ -233,13 +250,11 @@ def intelligent_chunk_proposals_token_aware(text: str):
             if len(section) < 30:
                 continue
             
-            # Extract section name
             section_name_match = re.match(r'>?\s*([^:\n]+)[:\n]', section)
             section_name = section_name_match.group(1).strip() if section_name_match else "General"
             
-            # Special handling for Pricing sections - keep them complete
+            # Keep pricing sections complete
             if any(keyword in section_name.lower() for keyword in ['pricing', 'costing', 'estimate']):
-                # Don't chunk pricing sections - keep them whole
                 doc = Document(
                     page_content=f"=== {proposal_title} - {section_name} ===\n\n{section}",
                     metadata={
@@ -254,13 +269,12 @@ def intelligent_chunk_proposals_token_aware(text: str):
                     }
                 )
                 all_chunks.append(doc)
-                print(f"    💰 Pricing section kept complete: {count_tokens(section)} tokens")
+                print(f"    💰 Pricing section: {count_tokens(section)} tokens")
                 continue
             
-            # For other sections, use token-aware chunking
             section_chunks = chunk_by_features_with_tokens(
                 section, 
-                max_tokens=1200,  # Slightly larger for more complete features
+                max_tokens=1200,
                 overlap_tokens=200,
                 proposal_title=proposal_title,
                 section_name=section_name
@@ -300,7 +314,6 @@ def chunk_by_features_with_tokens(text: str, max_tokens: int = 1200, overlap_tok
     header_tokens = count_tokens(header)
     effective_max = max_tokens - header_tokens - 50
     
-    # Split by numbered items
     numbered_pattern = r'(?=\n\s*\d+\.?\s+)'
     features = re.split(numbered_pattern, text)
     features = [f.strip() for f in features if f.strip()]
@@ -439,22 +452,30 @@ def get_last_n_tokens(text: str, n_tokens: int) -> str:
 
 # ========== BACKGROUND INITIALIZATION ==========
 def initialize_services():
-    """Initialize vectorstore and LLM"""
-    global vectorstore, llm, is_initialized, initialization_error, tokenizer
+    """Initialize vectorstore and both agents"""
+    global vectorstore, retriever_agent, writer_agent, is_initialized, initialization_error, tokenizer
     
     try:
-        print("📄 Starting initialization...")
+        print("📄 Starting multi-agent initialization...")
         
         tokenizer = tiktoken.get_encoding("cl100k_base")
         print("✅ Tokenizer initialized")
         
-        # Lower temperature for stricter adherence
-        llm = ChatOpenAI(
+        # Agent 1: Retriever (extracts bullet points) - Low temperature for exact extraction
+        retriever_agent = ChatOpenAI(
             model="gpt-4o-mini", 
-            temperature=0.05,  # Even lower for pricing accuracy
+            temperature=0.0,  # Zero creativity - exact extraction only
             api_key=openai_api_key
         )
-        print("✅ LLM initialized")
+        print("✅ Agent 1 (Retriever) initialized")
+        
+        # Agent 2: Writer (elaborates bullet points) - Slightly higher for natural writing
+        writer_agent = ChatOpenAI(
+            model="gpt-4o-mini", 
+            temperature=0.3,  # Some creativity for elaboration, but controlled
+            api_key=openai_api_key
+        )
+        print("✅ Agent 2 (Writer) initialized")
         
         embeddings = OpenAIEmbeddings(
             model="text-embedding-3-large", 
@@ -462,7 +483,6 @@ def initialize_services():
         )
         print("✅ Embeddings initialized")
         
-        # Use new version to force rebuild with fixed chunking
         persist_dir = "./chroma_store_v3"
         
         if os.path.exists(persist_dir):
@@ -478,10 +498,9 @@ def initialize_services():
             docs = loader.load()
             
             full_text = "\n".join([d.page_content for d in docs])
-            
             chunked_docs = intelligent_chunk_proposals_token_aware(full_text)
             
-            print(f"✅ Created {len(chunked_docs)} chunks with improved isolation")
+            print(f"✅ Created {len(chunked_docs)} chunks")
             
             vectorstore = Chroma.from_documents(
                 chunked_docs,
@@ -497,7 +516,7 @@ def initialize_services():
             )
         
         is_initialized = True
-        print("✅ All services initialized successfully!")
+        print("✅ Multi-agent system initialized successfully!")
         
     except Exception as e:
         initialization_error = str(e)
@@ -520,7 +539,7 @@ async def startup_event():
 def extract_intent(question: str) -> dict:
     try:
         filled_prompt = intent_prompt.format(question=question)
-        response = llm.invoke(filled_prompt)
+        response = retriever_agent.invoke(filled_prompt)
         content = response.content.strip()
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
@@ -556,8 +575,12 @@ def root():
     status = "initializing" if not is_initialized else "ready"
     return {
         "status": "online", 
-        "message": "Proposal Generator API is running.",
-        "initialization_status": status
+        "message": "Multi-Agent Proposal Generator API",
+        "initialization_status": status,
+        "agents": {
+            "agent_1": "Retriever (extracts bullet points)",
+            "agent_2": "Writer (elaborates descriptions)"
+        }
     }
 
 @app.get("/health")
@@ -574,7 +597,8 @@ def status():
         "initialized": is_initialized,
         "error": initialization_error,
         "vectorstore_ready": vectorstore is not None,
-        "llm_ready": llm is not None
+        "retriever_agent_ready": retriever_agent is not None,
+        "writer_agent_ready": writer_agent is not None
     }
 
 @app.post("/ask")
@@ -583,23 +607,26 @@ def ask(query: Query):
         if initialization_error:
             raise HTTPException(status_code=500, detail=f"Initialization failed: {initialization_error}")
         
-        if not is_initialized or vectorstore is None or llm is None:
+        if not is_initialized or vectorstore is None or retriever_agent is None or writer_agent is None:
             raise HTTPException(status_code=503, detail="Service is still initializing.")
         
-        print(f"🟢 Query: {query.question}")
+        print(f"\n{'='*80}")
+        print(f"🟢 NEW REQUEST: {query.question}")
+        print(f"{'='*80}\n")
 
+        # Step 1: Extract intent
         intent = extract_intent(query.question)
-        print(f"🧩 Intent: {intent}")
+        print(f"🧩 Intent extracted: {intent.get('platform_type', 'Unknown')}")
 
         requirements = format_requirements(intent, query.question)
 
-        # Enhanced retrieval with filtering
+        # Step 2: Retrieve relevant context
         retriever = vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={
                 "k": 40,
                 "fetch_k": 70,
-                "lambda_mult": 0.75  # Higher for more relevance focus
+                "lambda_mult": 0.75
             }
         )
         related_docs = retriever.invoke(query.question)
@@ -607,7 +634,7 @@ def ask(query: Query):
         if not related_docs:
             raise HTTPException(status_code=404, detail="No related context found.")
 
-        # Group by proposal with strict isolation
+        # Step 3: Identify primary proposal
         proposals_found = {}
         
         for doc in related_docs:
@@ -617,8 +644,7 @@ def ask(query: Query):
             if proposal_title not in proposals_found:
                 proposals_found[proposal_title] = {
                     'sections': {},
-                    'total_chunks': 0,
-                    'relevance_score': 0
+                    'total_chunks': 0
                 }
             
             if section_name not in proposals_found[proposal_title]['sections']:
@@ -627,42 +653,74 @@ def ask(query: Query):
             proposals_found[proposal_title]['sections'][section_name].append(doc.page_content)
             proposals_found[proposal_title]['total_chunks'] += 1
         
-        # Find the most relevant proposal (most chunks retrieved)
-        if proposals_found:
-            primary_proposal = max(proposals_found.items(), key=lambda x: x[1]['total_chunks'])[0]
-            print(f"🎯 Primary proposal identified: {primary_proposal}")
-            
-            # Build context from ONLY the primary proposal
-            context_parts = []
-            context_parts.append(f"\n{'='*80}\n PRIMARY PROPOSAL: {primary_proposal}\n{'='*80}\n")
-            
-            for section_name, chunks in proposals_found[primary_proposal]['sections'].items():
-                section_header = f"\n--- {section_name} ---\n"
-                section_content = "\n\n".join(chunks)
-                context_parts.append(section_header + section_content)
-            
-            context = "\n\n".join(context_parts)
-        else:
-            context = "\n\n".join([doc.page_content for doc in related_docs])
+        primary_proposal = max(proposals_found.items(), key=lambda x: x[1]['total_chunks'])[0]
+        print(f"🎯 Primary proposal: {primary_proposal}")
+        
+        # Build context from primary proposal only
+        context_parts = []
+        context_parts.append(f"\n{'='*80}\nPRIMARY PROPOSAL: {primary_proposal}\n{'='*80}\n")
+        
+        for section_name, chunks in proposals_found[primary_proposal]['sections'].items():
+            section_header = f"\n--- {section_name} ---\n"
+            section_content = "\n\n".join(chunks)
+            context_parts.append(section_header + section_content)
+        
+        context = "\n\n".join(context_parts)
 
-        print(f"📄 Using {proposals_found[primary_proposal]['total_chunks']} chunks from: {primary_proposal}")
+        print(f"📄 Context: {proposals_found[primary_proposal]['total_chunks']} chunks")
 
-        filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
-        response = llm.invoke(filled_prompt)
+        # ========== AGENT 1: RETRIEVER - Extract bullet points ==========
+        print(f"\n🤖 AGENT 1 (Retriever): Extracting bullet points...")
+        
+        retriever_filled_prompt = retriever_prompt.format(
+            context=context, 
+            requirements=requirements
+        )
+        retriever_response = retriever_agent.invoke(retriever_filled_prompt)
+        bullet_points = retriever_response.content.strip()
+        
+        print(f"✅ Agent 1 completed: Extracted {bullet_points.count(chr(10))} lines")
+        print(f"\n--- AGENT 1 OUTPUT (Sample) ---")
+        print(bullet_points[:500] + "..." if len(bullet_points) > 500 else bullet_points)
+        print(f"--- END SAMPLE ---\n")
+
+        # ========== AGENT 2: WRITER - Elaborate bullet points ==========
+        print(f"🤖 AGENT 2 (Writer): Elaborating bullet points...")
+        
+        writer_filled_prompt = writer_prompt.format(
+            context=context,
+            bullet_points=bullet_points
+        )
+        writer_response = writer_agent.invoke(writer_filled_prompt)
+        elaborated_proposal = writer_response.content.strip()
+        
+        print(f"✅ Agent 2 completed: Generated proposal")
 
         # Clean output
-        cleaned = response.content
+        cleaned = elaborated_proposal
         cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Not available[^\]]*\]', '', cleaned)
         cleaned = re.sub(r'\[Note:.*?\]', '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'(?i)(##?\s*(Conclusion|Summary|Final Thoughts).*?)(?=##|$)', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'(?i)(This proposal.*|We look forward.*|Thank you for.*|Feel free.*|Please don\'t.*)$', '', cleaned, flags=re.DOTALL)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r' {2,}', ' ', cleaned)
         cleaned = cleaned.strip()
 
-        print("✅ Proposal generated")
-        return {"answer": cleaned, "extracted_intent": intent, "primary_proposal": primary_proposal}
+        print(f"\n✅ PROPOSAL GENERATED SUCCESSFULLY")
+        print(f"{'='*80}\n")
+
+        return {
+            "answer": cleaned,
+            "extracted_intent": intent,
+            "primary_proposal": primary_proposal,
+            "agent_1_output": bullet_points,  # Include for debugging
+            "processing_steps": {
+                "step_1": "Intent extraction completed",
+                "step_2": f"Retrieved {len(related_docs)} chunks",
+                "step_3": f"Identified primary proposal: {primary_proposal}",
+                "step_4": "Agent 1 extracted bullet points",
+                "step_5": "Agent 2 elaborated descriptions"
+            }
+        }
 
     except HTTPException:
         raise
