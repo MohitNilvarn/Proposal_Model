@@ -96,17 +96,20 @@ WEBSITE FEATURES:
 1. [Exact feature name/text from context]
 
 PRICING:
-1. [Exact pricing line from context]
-2. [Exact pricing line from context]
-3. [Exact pricing line from context]
+1. [COMPLETE pricing line with amount - e.g., "Design: ₹2,00,000"]
+2. [COMPLETE pricing line with amount - e.g., "Development: ₹4,35,000"]
+3. [COMPLETE pricing line with amount - e.g., "Total: ₹7,54,000"]
 ```
 
 === WHAT NOT TO DO ===
 ❌ Do NOT write: "User Management: Allows administrators to manage users efficiently"
 ✅ DO write: "User Management"
 
+❌ Do NOT write: "Design" (missing price)
+✅ DO write: "Design: ₹2,00,000"
+
 ❌ Do NOT add explanations or descriptions
-✅ DO extract only the feature names/titles
+✅ DO extract only the feature names/titles with exact pricing amounts
 
 ❌ Do NOT combine or summarize features
 ✅ DO list each feature separately
@@ -135,21 +138,38 @@ Take each bullet point from Agent 1 and expand it into a clear, professional 1-2
 5. **GENERIC IS OKAY**: If context lacks details, write a generic but accurate description based on the feature name
 6. **NO ASSUMPTIONS**: Do not add technical specs, timelines, or implementation details not in context
 
+=== CRITICAL: PRICING MUST BE EXACT ===
+**FOR PRICING SECTIONS - ABSOLUTE RULE:**
+- Copy pricing numbers EXACTLY as they appear in Agent 1's output
+- Do NOT convert currencies (₹ to USD or vice versa)
+- Do NOT change amounts
+- Do NOT add your own pricing breakdowns
+- If Agent 1 says "Design: ₹2,00,000", you write "**Design**: ₹2,00,000"
+- Only add a brief 1-sentence description AFTER the exact price
+- Example: "**Design**: ₹2,00,000 - Professional UI/UX design services for the platform."
+
 === ELABORATION GUIDELINES ===
 
-For each bullet point, write:
+For FEATURE bullet points, write:
 - **[Feature Name]**: [1-2 sentence description explaining what it does and its benefit]
+
+For PRICING bullet points, write:
+- **[Item Name]**: [EXACT PRICE FROM AGENT 1] - [Brief 1-sentence description]
 
 Example transformations:
 
+**Features:**
 Input: "User Management"
 Output: "**User Management**: Administrators can view, edit, and manage all user accounts with the ability to activate, deactivate, or block users based on their activity and policy compliance."
 
-Input: "Payment Integration"
-Output: "**Payment Integration**: Secure integration with multiple payment gateways to support credit/debit cards, digital wallets, and other payment methods for seamless transactions."
+**Pricing (CRITICAL - PRESERVE EXACT NUMBERS):**
+Input: "Design: ₹2,00,000"
+Output: "**Design**: ₹2,00,000 - Professional UI/UX design services tailored to the platform's requirements."
 
-Input: "Push Notifications"
-Output: "**Push Notifications**: Real-time alerts and updates sent directly to users' devices to inform them about orders, promotions, system updates, and important events."
+Input: "Total: ₹7,54,000"
+Output: "**Total**: ₹7,54,000 - The complete project cost including development, testing, deployment, and annual maintenance."
+
+DO NOT CONVERT: If Agent 1 says ₹2,00,000, DO NOT write $2,500 or any other amount.
 
 === DESCRIPTION FORMULA ===
 1. Start with what the feature does (action/capability)
@@ -162,6 +182,9 @@ Output: "**Push Notifications**: Real-time alerts and updates sent directly to u
 ❌ "Built using React and Node.js" (tech details not in context)
 ❌ "Launching in Q1 2024" (timeline assumptions)
 ❌ "The most advanced system available" (subjective claims)
+❌ Converting "₹2,00,000" to "$2,500" or any other currency/amount (NEVER CHANGE PRICING)
+❌ Writing "Design: Approximately ₹2,00,000" (remove words like "approximately", use exact amounts)
+❌ Rounding or approximating numbers (preserve exact amounts from Agent 1)
 
 === ORIGINAL CONTEXT (for reference only) ===
 {context}
@@ -469,10 +492,10 @@ def initialize_services():
         )
         print("✅ Agent 1 (Retriever) initialized")
         
-        # Agent 2: Writer (elaborates bullet points) - Slightly higher for natural writing
+        # Agent 2: Writer (elaborates bullet points) - Very low temperature for pricing accuracy
         writer_agent = ChatOpenAI(
             model="gpt-4o-mini", 
-            temperature=0.3,  # Some creativity for elaboration, but controlled
+            temperature=0.1,  # Lower creativity - must preserve exact pricing
             api_key=openai_api_key
         )
         print("✅ Agent 2 (Writer) initialized")
